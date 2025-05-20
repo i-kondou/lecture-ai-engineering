@@ -1,9 +1,11 @@
 import os
+import pickle
+import time
+
 import pytest
 import pandas as pd
 import numpy as np
-import pickle
-import time
+
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
@@ -16,9 +18,10 @@ from sklearn.pipeline import Pipeline
 DATA_PATH = os.path.join(os.path.dirname(__file__), "../data/Titanic.csv")
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "../models")
 MODEL_PATH = os.path.join(MODEL_DIR, "titanic_model.pkl")
+BASELINE_MODEL_PATH = os.path.join(MODEL_DIR, "titanic_model_baseline.pkl")
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def sample_data():
     """テスト用データセットを読み込む"""
     if not os.path.exists(DATA_PATH):
@@ -28,7 +31,6 @@ def sample_data():
         df = titanic.data
         df["Survived"] = titanic.target
 
-        # 必要なカラムのみ選択
         df = df[
             ["Pclass", "Sex", "Age", "SibSp", "Parch", "Fare", "Embarked", "Survived"]
         ]
@@ -42,19 +44,15 @@ def sample_data():
 @pytest.fixture
 def preprocessor():
     """前処理パイプラインを定義"""
-    # 数値カラムと文字列カラムを定義
     numeric_features = ["Age", "Pclass", "SibSp", "Parch", "Fare"]
     categorical_features = ["Sex", "Embarked"]
 
-    # 数値特徴量の前処理（欠損値補完と標準化）
     numeric_transformer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
         ]
     )
-
-    # カテゴリカル特徴量の前処理（欠損値補完とOne-hotエンコーディング）
     categorical_transformer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
@@ -62,28 +60,23 @@ def preprocessor():
         ]
     )
 
-    # 前処理をまとめる
-    preprocessor = ColumnTransformer(
+    return ColumnTransformer(
         transformers=[
             ("num", numeric_transformer, numeric_features),
             ("cat", categorical_transformer, categorical_features),
         ]
     )
 
-    return preprocessor
-
 
 @pytest.fixture
 def train_model(sample_data, preprocessor):
     """モデルの学習とテストデータの準備"""
-    # データの分割とラベル変換
     X = sample_data.drop("Survived", axis=1)
     y = sample_data["Survived"].astype(int)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
 
-    # モデルパイプラインの作成
     model = Pipeline(
         steps=[
             ("preprocessor", preprocessor),
@@ -91,15 +84,45 @@ def train_model(sample_data, preprocessor):
         ]
     )
 
-    # モデルの学習
     model.fit(X_train, y_train)
 
-    # モデルの保存
     os.makedirs(MODEL_DIR, exist_ok=True)
+    # 最新モデルを常に上書き
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(model, f)
 
+    # baseline がまだなければ一度だけ保存
+    if not os.path.exists(BASELINE_MODEL_PATH):
+        with open(BASELINE_MODEL_PATH, "wb") as f:
+            pickle.dump(model, f)
+
     return model, X_test, y_test
+
+
+@pytest.fixture(scope="session")
+def baseline_model_and_metrics(sample_data):
+    """baseline モデルをロードし、メトリクスを事前計算"""
+    if not os.path.exists(BASELINE_MODEL_PATH):
+        pytest.skip(f"Baseline model not found at {BASELINE_MODEL_PATH}")
+
+    with open(BASELINE_MODEL_PATH, "rb") as f:
+        baseline_model = pickle.load(f)
+
+    X = sample_data.drop("Survived", axis=1)
+    y = sample_data["Survived"].astype(int)
+    # 同じ分割を使う
+    _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # 精度
+    y_pred = baseline_model.predict(X_test)
+    base_acc = accuracy_score(y_test, y_pred)
+
+    # 推論時間
+    start = time.time()
+    baseline_model.predict(X_test)
+    base_time = time.time() - start
+
+    return X_test, y_test, base_acc, base_time
 
 
 def test_model_exists():
@@ -112,62 +135,68 @@ def test_model_exists():
 def test_model_accuracy(train_model):
     """モデルの精度を検証"""
     model, X_test, y_test = train_model
-
-    # 予測と精度計算
     y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-
-    # Titanicデータセットでは0.75以上の精度が一般的に良いとされる
-    assert accuracy >= 0.75, f"モデルの精度が低すぎます: {accuracy}"
+    acc = accuracy_score(y_test, y_pred)
+    assert acc >= 0.75, f"モデルの精度が低すぎます: {acc}"
 
 
 def test_model_inference_time(train_model):
     """モデルの推論時間を検証"""
     model, X_test, _ = train_model
-
-    # 推論時間の計測
-    start_time = time.time()
+    start = time.time()
     model.predict(X_test)
-    end_time = time.time()
-
-    inference_time = end_time - start_time
-
-    # 推論時間が1秒未満であることを確認
-    assert inference_time < 1.0, f"推論時間が長すぎます: {inference_time}秒"
+    elapsed = time.time() - start
+    assert elapsed < 1.0, f"推論時間が長すぎます: {elapsed:.3f}秒"
 
 
 def test_model_reproducibility(sample_data, preprocessor):
     """モデルの再現性を検証"""
-    # データの分割
     X = sample_data.drop("Survived", axis=1)
     y = sample_data["Survived"].astype(int)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
 
-    # 同じパラメータで２つのモデルを作成
-    model1 = Pipeline(
-        steps=[
-            ("preprocessor", preprocessor),
-            ("classifier", RandomForestClassifier(n_estimators=100, random_state=42)),
-        ]
-    )
+    def build():
+        return Pipeline(
+            steps=[
+                ("preprocessor", preprocessor),
+                (
+                    "classifier",
+                    RandomForestClassifier(n_estimators=100, random_state=42),
+                ),
+            ]
+        )
 
-    model2 = Pipeline(
-        steps=[
-            ("preprocessor", preprocessor),
-            ("classifier", RandomForestClassifier(n_estimators=100, random_state=42)),
-        ]
-    )
+    m1, m2 = build(), build()
+    m1.fit(X_train, y_train)
+    m2.fit(X_train, y_train)
 
-    # 学習
-    model1.fit(X_train, y_train)
-    model2.fit(X_train, y_train)
+    p1 = m1.predict(X_test)
+    p2 = m2.predict(X_test)
 
-    # 同じ予測結果になることを確認
-    predictions1 = model1.predict(X_test)
-    predictions2 = model2.predict(X_test)
+    assert np.array_equal(p1, p2), "モデルの予測結果に再現性がありません"
 
-    assert np.array_equal(
-        predictions1, predictions2
-    ), "モデルの予測結果に再現性がありません"
+
+def test_performance_regression(train_model, baseline_model_and_metrics):
+    """
+    過去バージョンと比較して、
+    - 精度が劣化していないこと
+    - 推論時間が過大になっていないこと
+    """
+    model, X_test, y_test = train_model
+    _, _, base_acc, base_time = baseline_model_and_metrics
+
+    new_pred = model.predict(X_test)
+    new_acc = accuracy_score(y_test, new_pred)
+    assert (
+        new_acc >= base_acc
+    ), f"Accuracy regression: new={new_acc:.4f}, baseline={base_acc:.4f}"
+
+    start = time.time()
+    model.predict(X_test)
+    new_time = time.time() - start
+    # baseline の 1.2 倍まで許容
+    assert (
+        new_time <= base_time * 1.2
+    ), f"Inference time regression: new={new_time:.3f}s, baseline={base_time:.3f}s"
