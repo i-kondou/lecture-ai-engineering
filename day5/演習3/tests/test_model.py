@@ -173,6 +173,7 @@ def test_model_reproducibility(sample_data, preprocessor):
         predictions1, predictions2
     ), "モデルの予測結果に再現性がありません"
 
+
 def test_performance_regression(train_model, baseline_model_and_metrics):
     """
     過去バージョンと比較して、
@@ -184,14 +185,14 @@ def test_performance_regression(train_model, baseline_model_and_metrics):
 
     new_pred = model.predict(X_test)
     new_acc = accuracy_score(y_test, new_pred)
-    assert new_acc >= base_acc, (
-        f"Accuracy regression: new={new_acc:.4f}, baseline={base_acc:.4f}"
-    )
+    assert (
+        new_acc >= base_acc
+    ), f"Accuracy regression: new={new_acc:.4f}, baseline={base_acc:.4f}"
 
     start = time.time()
     model.predict(X_test)
     new_time = time.time() - start
     # baseline の 1.2 倍まで許容
-    assert new_time <= base_time * 1.2, (
-        f"Inference time regression: new={new_time:.3f}s, baseline={base_time:.3f}s"
-    )
+    assert (
+        new_time <= base_time * 1.2
+    ), f"Inference time regression: new={new_time:.3f}s, baseline={base_time:.3f}s"
