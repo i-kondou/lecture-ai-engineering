@@ -21,7 +21,7 @@ MODEL_PATH = os.path.join(MODEL_DIR, "titanic_model.pkl")
 BASELINE_MODEL_PATH = os.path.join(MODEL_DIR, "titanic_model_baseline.pkl")
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def sample_data():
     """テスト用データセットを読み込む"""
     if not os.path.exists(DATA_PATH):
